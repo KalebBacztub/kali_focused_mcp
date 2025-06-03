@@ -139,7 +139,7 @@ def execute_bash_command(command_string: str) -> str:
     # If the LLM is expected to generate complex shell commands with pipes, shell=True might be needed.
     # Let's start with shell=True for flexibility, assuming a controlled environment.
     # A timeout is crucial.
-    timeout_seconds = 30 
+    timeout_seconds = 120 
     try:
         print(f"[Server Log] Executing (shell=True): {command_string}")
         # Using shell=True is powerful but carries security risks if command_string is not trustworthy.
