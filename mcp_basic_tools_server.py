@@ -4,6 +4,7 @@ import subprocess
 import shlex
 import socket
 import requests
+import json
 from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP server
@@ -114,66 +115,45 @@ def check_port_status(target_host: str, port: int) -> str:
 
 # --- NEW TOOL ---
 @mcp.tool()
-def execute_bash_command(command_string: str) -> str:
+def execute_bash_command(command_string: str) -> str: # Return type is still str, but it will be a JSON string
     """
     Executes a given bash command string on the server (Kali Linux).
-    WARNING: This tool can execute arbitrary commands and should be used with extreme caution
-    and only in controlled, isolated environments. Ensure the AI's instructions are safe.
-
-    Args:
-        command_string: The full bash command to execute (e.g., "ls -la /tmp", "cat /etc/passwd").
-
-    Returns:
-        A string containing the standard output and standard error of the command,
-        or an error message if the command fails.
+    Returns a JSON string with 'stdout', 'stderr', and 'returncode'.
+    WARNING: This tool can execute arbitrary commands... (rest of docstring same)
     """
     print(f"[Server Log] Received execute_bash_command request: '{command_string[:100]}{'...' if len(command_string) > 100 else ''}'")
 
     if not command_string or not command_string.strip():
-        return "Error: Empty command string received."
+        return json.dumps({"stdout": "", "stderr": "Error: Empty command string received.", "returncode": -1})
 
-    # For security, it's often better to split the command string into a list
-    # if it's not a complex shell command needing shell features like pipes/redirects.
-    # However, to allow the LLM more flexibility (like in Cybench), we might use shell=True,
-    # acknowledging the risk. Using shlex.split is a safer way to parse if shell=False.
-    # If the LLM is expected to generate complex shell commands with pipes, shell=True might be needed.
-    # Let's start with shell=True for flexibility, assuming a controlled environment.
-    # A timeout is crucial.
-    timeout_seconds = 120 
+    timeout_seconds = 90 
     try:
-        print(f"[Server Log] Executing (shell=True): {command_string}")
-        # Using shell=True is powerful but carries security risks if command_string is not trustworthy.
-        # In this context, command_string comes from the LLM.
+        print(f"[Server Log] Executing (shell=True, timeout={timeout_seconds}s): {command_string}")
         result = subprocess.run(
             command_string,
-            shell=True,  # Allows complex commands, pipes, etc.
+            shell=True,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
-            check=False # Do not raise exception for non-zero exit codes
+            check=False
         )
         
-        output_lines = [f"--- Bash command execution result for: {shlex.quote(command_string[:50])}... ---"]
-        if result.stdout:
-            output_lines.append("Stdout:")
-            output_lines.append(result.stdout.strip())
-        if result.stderr:
-            output_lines.append("Stderr:")
-            output_lines.append(result.stderr.strip())
-        
-        output_lines.append(f"Command exit code: {result.returncode}")
-        final_output = "\n".join(output_lines)
-        print(f"[Server Log] Bash command executed. Output length: {len(final_output)}")
-        return final_output
+        response_data = {
+            "stdout": result.stdout.strip() if result.stdout else "",
+            "stderr": result.stderr.strip() if result.stderr else "",
+            "returncode": result.returncode
+        }
+        print(f"[Server Log] Bash command executed. RC: {result.returncode}. Stdout/Stderr length: {len(response_data['stdout'])}/{len(response_data['stderr'])}")
+        return json.dumps(response_data)
 
     except subprocess.TimeoutExpired:
         err_msg = f"Error: Bash command '{command_string[:50]}...' timed out after {timeout_seconds} seconds."
         print(f"[Server Log] {err_msg}")
-        return err_msg
+        return json.dumps({"stdout": "", "stderr": err_msg, "returncode": -1}) # Using -1 for timeout/script error
     except Exception as e:
-        err_msg = f"An unexpected error occurred while executing bash command '{command_string[:50]}...': {str(e)}"
+        err_msg = f"An unexpected server-side error occurred: {str(e)}"
         print(f"[Server Log] {err_msg}")
-        return err_msg
+        return json.dumps({"stdout": "", "stderr": err_msg, "returncode": -1})
 
 if __name__ == "__main__":
     current_server_id = "basic_pentest_tools_v1" 
