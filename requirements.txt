@@ -1,0 +1,5 @@
+requests
+mcp
+openai
+python-dotenv
+nest_asyncio
