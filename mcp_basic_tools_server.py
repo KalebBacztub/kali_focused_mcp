@@ -113,9 +113,17 @@ def check_port_status(target_host: str, port: int) -> str:
     finally:
         if sock: sock.close()
 
-# --- NEW TOOL ---
+# In mcp_basic_tools_server.py
+import subprocess
+import json
+import os
+import signal # Import the signal module
+import time   # Import the time module
+
+# ... other imports and your existing MCP server setup ...
+
 @mcp.tool()
-def execute_bash_command(command_string: str) -> str: # Return type is still str, but it will be a JSON string
+def execute_bash_command(command_string: str) -> str:
     """
     Executes a given bash command string on the server (Kali Linux).
     Returns a JSON string with 'stdout', 'stderr', and 'returncode'.
@@ -126,32 +134,92 @@ def execute_bash_command(command_string: str) -> str: # Return type is still str
     if not command_string or not command_string.strip():
         return json.dumps({"stdout": "", "stderr": "Error: Empty command string received.", "returncode": -1})
 
-    timeout_seconds = 90 
+    timeout_seconds = 90  # Initial timeout for the command
+    grace_period_seconds = 5 # How long to wait after SIGINT before SIGTERM
+
     try:
         print(f"[Server Log] Executing (shell=True, timeout={timeout_seconds}s): {command_string}")
-        result = subprocess.run(
+        
+        # Use Popen to have more control over the process
+        # preexec_fn=os.setsid is crucial for sending signals to the process group,
+        # ensuring the signal reaches the child processes spawned by 'shell=True'
+        process = subprocess.Popen(
             command_string,
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_seconds,
-            check=False
+            preexec_fn=os.setsid # This makes the process a session leader,
+                                # allowing kill(-pid, signal) to work on the process group
         )
-        
-        response_data = {
-            "stdout": result.stdout.strip() if result.stdout else "",
-            "stderr": result.stderr.strip() if result.stderr else "",
-            "returncode": result.returncode
-        }
-        print(f"[Server Log] Bash command executed. RC: {result.returncode}. Stdout/Stderr length: {len(response_data['stdout'])}/{len(response_data['stderr'])}")
-        return json.dumps(response_data)
 
-    except subprocess.TimeoutExpired:
-        err_msg = f"Error: Bash command '{command_string[:50]}...' timed out after {timeout_seconds} seconds."
-        print(f"[Server Log] {err_msg}")
-        return json.dumps({"stdout": "", "stderr": err_msg, "returncode": -1}) # Using -1 for timeout/script error
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+            response_data = {
+                "stdout": stdout.strip() if stdout else "",
+                "stderr": stderr.strip() if stderr else "",
+                "returncode": process.returncode
+            }
+            print(f"[Server Log] Bash command executed. RC: {process.returncode}. Stdout/Stderr length: {len(response_data['stdout'])}/{len(response_data['stderr'])}")
+            return json.dumps(response_data)
+
+        except subprocess.TimeoutExpired:
+            err_msg = f"Error: Bash command '{command_string[:50]}...' timed out after {timeout_seconds} seconds."
+            print(f"[Server Log] {err_msg} Attempting graceful termination (SIGINT)...")
+            
+            # Send SIGINT (Ctrl+C) to the process group
+            # Use -process.pid to send to the entire process group
+            os.killpg(process.pid, signal.SIGINT)
+            
+            # Wait a grace period for the process to terminate
+            try:
+                stdout, stderr = process.communicate(timeout=grace_period_seconds)
+                response_data = {
+                    "stdout": stdout.strip() if stdout else "",
+                    "stderr": stderr.strip() if stderr else "",
+                    "returncode": process.returncode if process.returncode is not None else -99 # Use a specific code for SIGINT termination
+                }
+                print(f"[Server Log] Command terminated with SIGINT. RC: {response_data['returncode']}. Stdout/Stderr length: {len(response_data['stdout'])}/{len(response_data['stderr'])}")
+                return json.dumps(response_data)
+            except subprocess.TimeoutExpired:
+                # Still not terminated after SIGINT grace period
+                err_msg += f" Process did not terminate after SIGINT. Sending SIGTERM..."
+                print(f"[Server Log] {err_msg}")
+                os.killpg(process.pid, signal.SIGTERM) # Send SIGTERM
+                
+                try:
+                    stdout, stderr = process.communicate(timeout=grace_period_seconds)
+                    response_data = {
+                        "stdout": stdout.strip() if stdout else "",
+                        "stderr": stderr.strip() if stderr else "",
+                        "returncode": process.returncode if process.returncode is not None else -98 # Use a specific code for SIGTERM termination
+                    }
+                    print(f"[Server Log] Command terminated with SIGTERM. RC: {response_data['returncode']}. Stdout/Stderr length: {len(response_data['stdout'])}/{len(response_data['stderr'])}")
+                    return json.dumps(response_data)
+                except subprocess.TimeoutExpired:
+                    # Still not terminated after SIGTERM grace period
+                    err_msg += " Process did not terminate after SIGTERM. Sending SIGKILL..."
+                    print(f"[Server Log] {err_msg}")
+                    os.killpg(process.pid, signal.SIGKILL) # Force kill
+                    
+                    stdout, stderr = process.communicate() # Wait for final cleanup
+                    response_data = {
+                        "stdout": stdout.strip() if stdout else "",
+                        "stderr": stderr.strip() if stderr else "",
+                        "returncode": process.returncode if process.returncode is not None else -97 # Use a specific code for SIGKILL termination
+                    }
+                    print(f"[Server Log] Command forcefully terminated (SIGKILL). RC: {response_data['returncode']}. Stdout/Stderr length: {len(response_data['stdout'])}/{len(response_data['stderr'])}")
+                    return json.dumps(response_data)
+            finally:
+                # Ensure the process is really gone if something else went wrong
+                if process.poll() is None:
+                    process.terminate()
+                    time.sleep(1)
+                    if process.poll() is None:
+                        process.kill()
+
     except Exception as e:
-        err_msg = f"An unexpected server-side error occurred: {str(e)}"
+        err_msg = f"An unexpected server-side error occurred during command execution: {str(e)}"
         print(f"[Server Log] {err_msg}")
         return json.dumps({"stdout": "", "stderr": err_msg, "returncode": -1})
 
