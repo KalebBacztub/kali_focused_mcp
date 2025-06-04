@@ -134,7 +134,7 @@ def execute_bash_command(command_string: str) -> str:
     if not command_string or not command_string.strip():
         return json.dumps({"stdout": "", "stderr": "Error: Empty command string received.", "returncode": -1})
 
-    timeout_seconds = 90  # Initial timeout for the command
+    timeout_seconds = 360  # Initial timeout for the command
     grace_period_seconds = 5 # How long to wait after SIGINT before SIGTERM
 
     try:
